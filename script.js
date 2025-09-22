@@ -144,8 +144,18 @@ toolkitBtn.addEventListener("click", () => {
     toolkitPages.forEach(page =>
       page.classList.remove("active", "fullscreen")
     );
+    toolkitIcons.forEach(icon =>
+      icon.classList.remove("active")
+    );
+  } else {
+    // 🔹 Toolkit opened → re-center the last active page (if any)
+    const activeIcon = document.querySelector(".toolkit-icons button.active");
+    if (activeIcon) {
+      scrollPageToIcon(activeIcon); // ✅ recenters properly
+    }
   }
 });
+
 
 // === Toolkit Button Hover Effect ===
 toolkitBtn.addEventListener("mousemove", e => {
@@ -165,36 +175,94 @@ toolkitBtn.addEventListener("click", () => {
   }
 });
 
-// === Toolkit Icon Click → Open Chapter ===
+// === Toolkit Icon Click → Open Chapter (robust transition) ===
+let isAnimating = false;
+
 toolkitIcons.forEach(icon => {
-  icon.addEventListener("click", () => {
+  icon.addEventListener("click", async () => {
+    if (isAnimating) return; // prevent re-entry during animation
+    isAnimating = true;
+
     const targetId = icon.getAttribute("data-page");
     const targetPage = document.getElementById(targetId);
+    if (!targetPage) { isAnimating = false; return; }
 
-    // Hide all toolkit pages
-    toolkitPages.forEach(page => page.classList.remove("active", "fullscreen"));
-
-    // Show clicked one
-    if (targetPage) {
-      targetPage.classList.add("active", "fullscreen");
-
-      // 🔹 Scroll so the bottom of page is visible with margin
-      const rect = targetPage.getBoundingClientRect();
-      const pageBottom = window.scrollY + rect.bottom;
-      const margin = 50; // adjust this gap as you like
-
-      window.scrollTo({
-        top: pageBottom - window.innerHeight + margin,
-        behavior: "smooth"
-      });
+    // if clicked page already active, bail
+    if (targetPage.classList.contains("active")) {
+      isAnimating = false;
+      return;
     }
 
-    // 🔹 Remove active state from all buttons
+    const currentPage = document.querySelector(".toolkit-page.active");
+
+    // helper: wait for transitionend (with timeout fallback)
+    const waitTransition = (el, timeout = 800) => new Promise(resolve => {
+      if (!el) return resolve();
+      let done = false;
+      const onEnd = (e) => {
+        if (e.target !== el) return;
+        if (done) return;
+        done = true;
+        el.removeEventListener("transitionend", onEnd);
+        clearTimeout(timer);
+        resolve();
+      };
+      el.addEventListener("transitionend", onEnd);
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        el.removeEventListener("transitionend", onEnd);
+        resolve();
+      }, timeout);
+    });
+
+    // hide currently open page (if any)
+    if (currentPage) {
+      currentPage.classList.remove("active");
+      void currentPage.offsetWidth;
+      currentPage.classList.add("fade-out");
+      await waitTransition(currentPage);
+      currentPage.style.display = "none";
+      currentPage.classList.remove("fade-out");
+    }
+
+    // ✅ show target page — reset position/opacity first
+    targetPage.style.display = "block";
+    targetPage.classList.remove("fade-out", "left", "right");
+    targetPage.style.transform = ""; // clear stale offset
+    targetPage.style.opacity = "";   // clear faded state
+
+    void targetPage.offsetWidth; // reflow
+
+    targetPage.classList.add("active");
+
+    await waitTransition(targetPage);
+
     toolkitIcons.forEach(btn => btn.classList.remove("active"));
-    // 🔹 Add active state to clicked button
     icon.classList.add("active");
+
+    scrollPageToIcon(icon);
+
+    isAnimating = false;
   });
 });
+
+// === Scroll page so icon & page are visible ===
+function scrollPageToIcon(icon, marginBottom = 200) {
+  if (!icon) return;
+
+  // Slight delay to ensure page is rendered
+  setTimeout(() => {
+    const rect = icon.getBoundingClientRect();
+    const scrollY = window.scrollY + rect.top - 190; // px from top
+    const maxScroll = document.body.scrollHeight - window.innerHeight + marginBottom;
+
+    window.scrollTo({
+      top: Math.min(scrollY, maxScroll),
+      behavior: "smooth"
+    });
+  }, 5);
+}
 
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -217,9 +285,21 @@ document.addEventListener("DOMContentLoaded", () => {
 document.querySelectorAll(".close-btn").forEach(btn => {
   btn.addEventListener("click", () => {
     const page = btn.closest(".toolkit-page");
+    if (!page) return;
+
+    // Remove active/fullscreen from page
     page.classList.remove("active", "fullscreen");
+    page.style.display = "none"; // also hide it completely
+
+    // Find and reset the matching icon
+    const pageId = page.getAttribute("id");
+    const icon = document.querySelector(`.toolkit-icons button[data-page="${pageId}"]`);
+    if (icon) {
+      icon.classList.remove("active");
+    }
   });
 });
+
 function showPage(pageId) {
   const pages = document.querySelectorAll('.toolkit-page');
 
@@ -311,25 +391,39 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     prevBtn?.addEventListener("click", () => {
-      currentIndex = (currentIndex - 1 + totalSlides) % totalSlides;
-      updateCarousel();
-    });
+    currentIndex = (currentIndex - 1 + totalSlides) % totalSlides;
+    updateCarousel();
+    updateExplanation("left");  // ⬅️ swipe left
+  });
 
-    nextBtn?.addEventListener("click", () => {
-      currentIndex = (currentIndex + 1) % totalSlides;
-      updateCarousel();
-    });
+  nextBtn?.addEventListener("click", () => {
+    currentIndex = (currentIndex + 1) % totalSlides;
+    updateCarousel();
+    updateExplanation("right"); // ➡️ swipe right
+  });
 
-    infoBtn?.addEventListener("click", () => {
-      explanation.classList.toggle("active");
-    });
+  infoBtn?.addEventListener("click", () => {
+  explanation.classList.toggle("active");
+  });
+      
+    function updateExplanation(direction = "right") {
+    const activeSlide = slides[currentIndex];
+    const text = (activeSlide.dataset.explanation || "").replace(/\\n/g, "<br>");
 
-    function updateExplanation() {
-      const activeSlide = slides[currentIndex];
-      const raw = activeSlide.dataset.explanation || "";
-      const text = raw.replace(/\\n/g, "<br>");
-      explanation.innerHTML = text;
-    }
+    // always clear out previous content first
+    explanation.innerHTML = "";
+
+    // create fresh content
+    const newContent = document.createElement("div");
+    newContent.className = `content enter-${direction}`;
+    newContent.innerHTML = text;
+    explanation.appendChild(newContent);
+
+    // trigger animation
+    requestAnimationFrame(() => {
+      newContent.classList.add("active");
+    });
+  }
   });
 
   // Explore buttons open URL
